@@ -27,6 +27,15 @@ class HybridMemory:
         self.current_dialog = []  # Текущая сессия (полные сообщения)
         self.summarized_history = ""  # Сжатая история прошлых сессий
         self.load_history()
+        # Добавляем обработчик команд
+        self.command_handlers = {
+            "open_browser": self.open_browser,
+            "open_explorer": self.open_explorer,
+            "open_terminal": self.open_terminal,
+            "shutdown": self.shutdown,
+            "reboot": self.reboot,
+            "open_path": self.open_path
+        }
 
     def load_history(self):
         """Загружает суммаризированную историю из файла"""
@@ -104,7 +113,8 @@ class AnimeAssistant:
     def __init__(self, root):
         self.root = root
         root.title("AI Assistant")
-        root.geometry("800x600")
+        root.geometry("880x600")
+        root.configure(bg="#2c2f33")
 
         # Инициализация истории чата
         self.context = []
@@ -121,6 +131,7 @@ class AnimeAssistant:
         style.configure("TLabel", background="#2c2f33", foreground="white")
         style.configure("TEntry", fieldbackground="#40444b", foreground="white")
         style.configure("TScrollbar", background="#23272a")
+        
         #style.configure("character_frame", background="#8A2BE2")
 
         # Основные фреймы
@@ -245,6 +256,11 @@ class AnimeAssistant:
         """Проверка и загрузка модели"""
         threading.Thread(target=self.check_model, daemon=True).start()
 
+        # Перенесем инициализацию модели в отдельный поток
+        threading.Thread(target=self.initialize_context, args=(personal_data,), daemon=True).start()
+
+
+    def initialize_context(self, personal_data):
         # 1. Добавляем сообщение пользователя в историю (не в ScrolledText!)
         self.context.append({"role": "user", "content": personal_data})
 
@@ -309,6 +325,39 @@ class AnimeAssistant:
 
     def get_ai_response(self, user_text):
         """Получение ответа от ИИ с учётом контекста"""
+
+        # Сначала проверяем, не является ли запрос командой
+        command_executed = False
+        for command, action in self.command_actions.items():
+            if command in user_text.lower():
+                self.execute_command(action, user_text)
+                command_executed = True
+                break
+        
+        # Если это не команда - обрабатываем как обычный запрос
+        if not command_executed:
+            try:
+                self.context.append({"role": "user", "content": user_text})
+                messages = [*self.context[-8:]]
+                
+                response = ollama.chat(
+                    model=self.model,
+                    messages=messages,
+                    stream=False
+                )
+                
+                ai_response = response['message']['content']
+                self.context.append({"role": "assistant", "content": ai_response})
+                self.add_to_chat("Мику", ai_response)
+                
+                self.set_emotion("happy")
+                self.root.after(2000, lambda: self.set_emotion("default"))
+                
+            except Exception as e:
+                self.add_to_chat("Ошибка", f"Не удалось обработать ответ: {str(e)}")
+                self.set_emotion("default")
+
+
         try:
             # 1. Добавляем сообщение пользователя в историю (не в ScrolledText!)
             self.context.append({"role": "user", "content": user_text})
