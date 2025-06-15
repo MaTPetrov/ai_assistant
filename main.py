@@ -325,86 +325,108 @@ class AnimeAssistant:
 # --------------------------------------------------------------------------------------------------------------------------------------------------------
 
     def get_ai_response(self, user_text):
-        """Оптимизированная версия с правильным определением команд"""
+        """Получение ответа от ИИ без JSON-форматирования"""
         
-        # Словарь команд
-        COMMAND_ACTIONS = {
-            "открой браузер": "firefox",
-            "открой файловый менеджер": "nautilus",
-            "открой проводник": "nautilus",
-            "открой терминал": "gnome-terminal",
-            "открой текстовый редактор": "gedit",
-            "открой обзор файлов": "nautilus",  # Добавили конкретную команду
-            "открой файловый обозреватель": "nautilus",
-            "открой диспетчер файлов": "nautilus",
+        # Основные команды и их ключевые слова
+        COMMAND_KEYWORDS = {
+            "firefox": ["браузер", "firefox", "интернет", "веб"],
+            "nautilus": ["файловый менеджер", "проводник", "файлы", "nautilus", "обзор файлов"],
+            "gnome-terminal": ["терминал", "консоль", "командная строка"],
+            "gedit": ["текстовый редактор", "gedit", "редактор текста", "заметки"],
         }
         
-        # 1. Быстрая проверка по ключевым словам
-        command_executed = False
-        for command, app_cmd in COMMAND_ACTIONS.items():
-            if command in user_text.lower():
-                try:
-                    subprocess.Popen(app_cmd, shell=True, start_new_session=True)
-                    self.add_to_chat("Мику", f"Открываю {command.split()[-1]}!")
-                    command_executed = True
-                    break
-                except Exception as e:
-                    self.add_to_chat("Ошибка", f"Не удалось выполнить команду: {str(e)}")
-                    command_executed = True
-                    break
+        # 1. Проверка на команды открытия
+        user_text_lower = user_text.lower()
         
-        if command_executed:
-            self.set_emotion("happy")
-            self.root.after(2000, lambda: self.set_emotion("default"))
-            return
-        
-        # 2. Интеллектуальная проверка с порогом уверенности
-        try:
-            # Формируем промпт для определения команды
-            command_prompt = f"""
-            Пользователь сказал: "{user_text}"
-            
-            Это запрос на выполнение какой-то из этих команд?
-            {list(COMMAND_ACTIONS.keys())}
-            
-            Ответ в JSON:
-            {{
-                "command": "название_команды" (если есть),
-                "confidence": 0.0-1.0
-            }}
-            """
-            
-            # Запрос к модели
-            response = ollama.generate(
-                model="mistral",
-                prompt=command_prompt,
-                options={
-                    "temperature": 0.1,
-                    "num_predict": 50  # Ограничиваем длину ответа
-                }
-            )
-            command_data = json.loads(response['response'])
-            
-            # Проверяем уверенность и наличие команды
-            if command_data.get("confidence", 0) > 0.7 and "command" in command_data:
-                command_name = command_data["command"]
-                if command_name in COMMAND_ACTIONS:
+        # Проверяем наличие ключевых слов для каждого приложения
+        for app_cmd, keywords in COMMAND_KEYWORDS.items():
+            for keyword in keywords:
+                # Если есть ключевое слово и глагол-триггер
+                if (keyword in user_text_lower and 
+                    ("открой" in user_text_lower or "запусти" in user_text_lower or "открыть" in user_text_lower)):
                     try:
-                        subprocess.Popen(
-                            COMMAND_ACTIONS[command_name], 
-                            shell=True, 
-                            start_new_session=True
-                        )
-                        self.add_to_chat("Мику", f"Открываю {command_name.split()[-1]}!")
+                        subprocess.Popen(app_cmd, shell=True, start_new_session=True)
+                        
+                        # Красивые названия для ответа
+                        app_names = {
+                            "firefox": "браузер Firefox",
+                            "nautilus": "файловый менеджер",
+                            "gnome-terminal": "терминал",
+                            "gedit": "текстовый редактор"
+                        }
+                        
+                        # Простой ответ без JSON
+                        response_text = f"Открываю {app_names.get(app_cmd, app_cmd)}!"
+                        self.add_to_chat("Мику", response_text)
+                        
+                        # Эмоции
                         self.set_emotion("happy")
                         self.root.after(2000, lambda: self.set_emotion("default"))
                         return
                     except Exception as e:
                         self.add_to_chat("Ошибка", f"Не удалось выполнить команду: {str(e)}")
+                        self.set_emotion("default")
                         return
         
+        # 2. Основной запрос к ИИ для обычных вопросов
+        try:
+            # Добавляем сообщение в контекст
+            self.context.append({"role": "user", "content": user_text})
+            
+            # Формируем контекст (без системных промптов)
+            messages = [*self.context[-8:]]
+            
+            # Запрос к модели
+            response = ollama.chat(
+                model=self.model,
+                messages=messages,
+                stream=False
+            )
+            
+            # Сохраняем ответ (просто текст)
+            ai_response = response['message']['content']
+            self.context.append({"role": "assistant", "content": ai_response})
+            
+            # Отображаем ответ (без обработки JSON)
+            self.add_to_chat("Мику", ai_response)
+            
+            # Эмоции
+            self.set_emotion("happy")
+            self.root.after(2000, lambda: self.set_emotion("default"))
+            
         except Exception as e:
-            print(f"Ошибка определения команды: {str(e)}")
+            self.add_to_chat("Ошибка", f"Не удалось обработать ответ: {str(e)}")
+            self.set_emotion("default")
+            
+            # 3. Проверка: не пытается ли ИИ выполнить команду без запроса?
+            if self.is_attempting_command(ai_response):
+                # Если ИИ пытается выполнить действие - переформулируем ответ
+                ai_response = "Я могу помочь открыть приложение, если вы явно попросите об этом. " \
+                            "Например: 'Открой браузер' или 'Запусти файловый менеджер'."
+            
+            # Отображаем ответ
+            self.add_to_chat("Мику", ai_response)
+            
+            # Эмоции
+            self.set_emotion("happy")
+            self.root.after(2000, lambda: self.set_emotion("default"))
+            
+        except Exception as e:
+            self.add_to_chat("Ошибка", f"Не удалось обработать ответ: {str(e)}")
+            self.set_emotion("default")
+
+    def is_attempting_command(self, response):
+        """Проверяет, не пытается ли ИИ выполнить команду без запроса"""
+        command_indicators = [
+            "открываю",
+            "запускаю",
+            "выполняю",
+            "включаю",
+            "сейчас сделаю"
+        ]
+        
+        # Проверяем наличие индикаторов команды в ответе
+        return any(indicator in response.lower() for indicator in command_indicators)
         
         # 3. Основной запрос к ИИ
         try:
