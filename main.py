@@ -6,6 +6,7 @@ import time
 import ollama
 import json
 from pathlib import Path
+import subprocess
 
 
 #открытие файла с данными пользователя
@@ -197,7 +198,7 @@ class AnimeAssistant:
         self.current_emotion = "default"
 
         # Приветственное сообщение
-        self.add_to_chat("Ассистент", "Привет! Чем могу помочь?")
+        self.add_to_chat("Мику", "Привет! Чем могу помочь?")
 
 # --------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -299,7 +300,7 @@ class AnimeAssistant:
     def add_to_chat(self, sender, message):
         """Добавление сообщения в чат"""
         self.chat_history.config(state=tk.NORMAL)
-        if sender == "Ассистент":
+        if sender == "Мику":
             self.chat_history.tag_config("ai", foreground=AI_TEXT_COLOR)
             self.chat_history.insert(tk.END, f"{sender}: {message}\n\n", "ai")
         else:
@@ -324,76 +325,119 @@ class AnimeAssistant:
 # --------------------------------------------------------------------------------------------------------------------------------------------------------
 
     def get_ai_response(self, user_text):
-        """Получение ответа от ИИ с учётом контекста"""
-
-        # Сначала проверяем, не является ли запрос командой
-        command_executed = False
-        for command, action in self.command_actions.items():
-            if command in user_text.lower():
-                self.execute_command(action, user_text)
-                command_executed = True
-                break
+        """Оптимизированная версия с правильным определением команд"""
         
-        # Если это не команда - обрабатываем как обычный запрос
-        if not command_executed:
-            try:
-                self.context.append({"role": "user", "content": user_text})
-                messages = [*self.context[-8:]]
-                
-                response = ollama.chat(
-                    model=self.model,
-                    messages=messages,
-                    stream=False
-                )
-                
-                ai_response = response['message']['content']
-                self.context.append({"role": "assistant", "content": ai_response})
-                self.add_to_chat("Мику", ai_response)
-                
-                self.set_emotion("happy")
-                self.root.after(2000, lambda: self.set_emotion("default"))
-                
-            except Exception as e:
-                self.add_to_chat("Ошибка", f"Не удалось обработать ответ: {str(e)}")
-                self.set_emotion("default")
-
-
+        # Словарь команд
+        COMMAND_ACTIONS = {
+            "открой браузер": "firefox",
+            "открой файловый менеджер": "nautilus",
+            "открой проводник": "nautilus",
+            "открой терминал": "gnome-terminal",
+            "открой текстовый редактор": "gedit",
+            "открой обзор файлов": "nautilus",  # Добавили конкретную команду
+            "открой файловый обозреватель": "nautilus",
+            "открой диспетчер файлов": "nautilus",
+        }
+        
+        # 1. Быстрая проверка по ключевым словам
+        command_executed = False
+        for command, app_cmd in COMMAND_ACTIONS.items():
+            if command in user_text.lower():
+                try:
+                    subprocess.Popen(app_cmd, shell=True, start_new_session=True)
+                    self.add_to_chat("Мику", f"Открываю {command.split()[-1]}!")
+                    command_executed = True
+                    break
+                except Exception as e:
+                    self.add_to_chat("Ошибка", f"Не удалось выполнить команду: {str(e)}")
+                    command_executed = True
+                    break
+        
+        if command_executed:
+            self.set_emotion("happy")
+            self.root.after(2000, lambda: self.set_emotion("default"))
+            return
+        
+        # 2. Интеллектуальная проверка с порогом уверенности
         try:
-            # 1. Добавляем сообщение пользователя в историю (не в ScrolledText!)
+            # Формируем промпт для определения команды
+            command_prompt = f"""
+            Пользователь сказал: "{user_text}"
+            
+            Это запрос на выполнение какой-то из этих команд?
+            {list(COMMAND_ACTIONS.keys())}
+            
+            Ответ в JSON:
+            {{
+                "command": "название_команды" (если есть),
+                "confidence": 0.0-1.0
+            }}
+            """
+            
+            # Запрос к модели
+            response = ollama.generate(
+                model="mistral",
+                prompt=command_prompt,
+                options={
+                    "temperature": 0.1,
+                    "num_predict": 50  # Ограничиваем длину ответа
+                }
+            )
+            command_data = json.loads(response['response'])
+            
+            # Проверяем уверенность и наличие команды
+            if command_data.get("confidence", 0) > 0.7 and "command" in command_data:
+                command_name = command_data["command"]
+                if command_name in COMMAND_ACTIONS:
+                    try:
+                        subprocess.Popen(
+                            COMMAND_ACTIONS[command_name], 
+                            shell=True, 
+                            start_new_session=True
+                        )
+                        self.add_to_chat("Мику", f"Открываю {command_name.split()[-1]}!")
+                        self.set_emotion("happy")
+                        self.root.after(2000, lambda: self.set_emotion("default"))
+                        return
+                    except Exception as e:
+                        self.add_to_chat("Ошибка", f"Не удалось выполнить команду: {str(e)}")
+                        return
+        
+        except Exception as e:
+            print(f"Ошибка определения команды: {str(e)}")
+        
+        # 3. Основной запрос к ИИ
+        try:
+            # Добавляем сообщение в контекст
             self.context.append({"role": "user", "content": user_text})
-
-            # 2. Формируем контекст
-            messages = [
-                *self.context[-8:]  # Берём 8 последних сообщений
-            ]
-
-            # 3. Запрос к модели
+            
+            # Формируем контекст (ограничиваем историю)
+            messages = [*self.context[-4:]]  # Только 4 последних сообщения
+            
+            # Ускоряем запрос параметрами
             response = ollama.chat(
                 model=self.model,
                 messages=messages,
+                options={
+                    "temperature": 0.7,
+                    "num_predict": 128  # Ограничиваем длину ответа
+                },
                 stream=False
             )
-
-            # 4. Сохраняем ответ
+            
+            # Сохраняем и отображаем ответ
             ai_response = response['message']['content']
             self.context.append({"role": "assistant", "content": ai_response})
-
-            # 5. Отображаем в интерфейсе (правильный метод для ScrolledText)
-            self.chat_history.config(state=tk.NORMAL)
-            #self.chat_history.insert(tk.END, f"Вы: {user_text}\n\n", "user")
-            self.chat_history.insert(tk.END, f"Мику: {ai_response}\n\n", "ai")
-            self.chat_history.config(state=tk.DISABLED)
-            self.chat_history.see(tk.END)
-
-            # 6. Эмоции
+            self.add_to_chat("Мику", ai_response)
+            
+            # Эмоции
             self.set_emotion("happy")
             self.root.after(2000, lambda: self.set_emotion("default"))
-
+            
         except Exception as e:
-            self.chat_history.insert(tk.END, f"Ошибка: {str(e)}\n\n")
+            self.add_to_chat("Ошибка", f"Не удалось обработать ответ: {str(e)}")
             self.set_emotion("default")
-
-
+    
 #--------------------------------------------------------------------------------------------------------------------------------------------------------
 
 if __name__ == "__main__":
