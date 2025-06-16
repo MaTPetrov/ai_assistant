@@ -325,25 +325,32 @@ class AnimeAssistant:
 # --------------------------------------------------------------------------------------------------------------------------------------------------------
 
     def get_ai_response(self, user_text):
-        """Получение ответа от ИИ без JSON-форматирования"""
+        """Получение ответа от ИИ с полной очисткой JSON"""
         
         # Основные команды и их ключевые слова
         COMMAND_KEYWORDS = {
             "firefox": ["браузер", "firefox", "интернет", "веб"],
             "nautilus": ["файловый менеджер", "проводник", "файлы", "nautilus", "обзор файлов"],
-            "gnome-terminal": ["терминал", "консоль", "командная строка"],
+            "kitty": ["терминал", "консоль", "командная строка"],
             "gedit": ["текстовый редактор", "gedit", "редактор текста", "заметки"],
         }
         
-        # 1. Проверка на команды открытия
+        # 1. Очистка контекста от старых JSON-ответов
+        self.context = [msg for msg in self.context if not isinstance(msg.get('content', ''), str) or '{' not in msg['content']]
+        
+        # 2. Проверка на команды открытия
         user_text_lower = user_text.lower()
+        
+        # Расширенные триггеры команд
+        open_triggers = ["открой", "запусти", "открыть", "запустить", "включи", 
+                        "открый", "откроешь", "запустишь", "можешь открыть", "можно открыть"]
         
         # Проверяем наличие ключевых слов для каждого приложения
         for app_cmd, keywords in COMMAND_KEYWORDS.items():
             for keyword in keywords:
-                # Если есть ключевое слово и глагол-триггер
+                # Если есть ключевое слово и любой из триггеров
                 if (keyword in user_text_lower and 
-                    ("открой" in user_text_lower or "запусти" in user_text_lower or "открыть" in user_text_lower)):
+                    any(trigger in user_text_lower for trigger in open_triggers)):
                     try:
                         subprocess.Popen(app_cmd, shell=True, start_new_session=True)
                         
@@ -351,7 +358,7 @@ class AnimeAssistant:
                         app_names = {
                             "firefox": "браузер Firefox",
                             "nautilus": "файловый менеджер",
-                            "gnome-terminal": "терминал",
+                            "kitty": "терминал kitty",
                             "gedit": "текстовый редактор"
                         }
                         
@@ -368,13 +375,13 @@ class AnimeAssistant:
                         self.set_emotion("default")
                         return
         
-        # 2. Основной запрос к ИИ для обычных вопросов
+        # 3. Основной запрос к ИИ для обычных вопросов
         try:
             # Добавляем сообщение в контекст
             self.context.append({"role": "user", "content": user_text})
             
-            # Формируем контекст (без системных промптов)
-            messages = [*self.context[-8:]]
+            # Формируем чистый контекст без системных промптов
+            messages = [msg for msg in self.context[-8:] if not msg.get('content', '').startswith('{')]
             
             # Запрос к модели
             response = ollama.chat(
@@ -383,26 +390,16 @@ class AnimeAssistant:
                 stream=False
             )
             
-            # Сохраняем ответ (просто текст)
+            # Сохраняем ответ
             ai_response = response['message']['content']
+            
+            # Полная очистка ответа от JSON
+            if isinstance(ai_response, str):
+                ai_response = ai_response.split('{')[0].split('}')[-1].strip()
+                if not ai_response:
+                    ai_response = "Готово!"
+            
             self.context.append({"role": "assistant", "content": ai_response})
-            
-            # Отображаем ответ (без обработки JSON)
-            self.add_to_chat("Мику", ai_response)
-            
-            # Эмоции
-            self.set_emotion("happy")
-            self.root.after(2000, lambda: self.set_emotion("default"))
-            
-        except Exception as e:
-            self.add_to_chat("Ошибка", f"Не удалось обработать ответ: {str(e)}")
-            self.set_emotion("default")
-            
-            # 3. Проверка: не пытается ли ИИ выполнить команду без запроса?
-            if self.is_attempting_command(ai_response):
-                # Если ИИ пытается выполнить действие - переформулируем ответ
-                ai_response = "Я могу помочь открыть приложение, если вы явно попросите об этом. " \
-                            "Например: 'Открой браузер' или 'Запусти файловый менеджер'."
             
             # Отображаем ответ
             self.add_to_chat("Мику", ai_response)
@@ -417,6 +414,9 @@ class AnimeAssistant:
 
     def is_attempting_command(self, response):
         """Проверяет, не пытается ли ИИ выполнить команду без запроса"""
+        if not isinstance(response, str):
+            return False
+            
         command_indicators = [
             "открываю",
             "запускаю",
@@ -425,40 +425,9 @@ class AnimeAssistant:
             "сейчас сделаю"
         ]
         
-        # Проверяем наличие индикаторов команды в ответе
         return any(indicator in response.lower() for indicator in command_indicators)
         
-        # 3. Основной запрос к ИИ
-        try:
-            # Добавляем сообщение в контекст
-            self.context.append({"role": "user", "content": user_text})
-            
-            # Формируем контекст (ограничиваем историю)
-            messages = [*self.context[-4:]]  # Только 4 последних сообщения
-            
-            # Ускоряем запрос параметрами
-            response = ollama.chat(
-                model=self.model,
-                messages=messages,
-                options={
-                    "temperature": 0.7,
-                    "num_predict": 128  # Ограничиваем длину ответа
-                },
-                stream=False
-            )
-            
-            # Сохраняем и отображаем ответ
-            ai_response = response['message']['content']
-            self.context.append({"role": "assistant", "content": ai_response})
-            self.add_to_chat("Мику", ai_response)
-            
-            # Эмоции
-            self.set_emotion("happy")
-            self.root.after(2000, lambda: self.set_emotion("default"))
-            
-        except Exception as e:
-            self.add_to_chat("Ошибка", f"Не удалось обработать ответ: {str(e)}")
-            self.set_emotion("default")
+        
     
 #--------------------------------------------------------------------------------------------------------------------------------------------------------
 
