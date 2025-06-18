@@ -123,6 +123,9 @@ def check_ollama_connection(max_retries=5, delay=2):
 
 
 class AnimeAssistant:
+
+    audio_token = True
+
     def __init__(self, root):
         self.root = root
         root.title("AI Assistant")
@@ -253,7 +256,7 @@ class AnimeAssistant:
         def audio_callback(indata, frames, time, status):
             """Обратный вызов для записи аудио"""
             audio_queue.put(bytes(indata))
-            
+        
         try:
             # Открываем аудиопоток
             with sd.RawInputStream(
@@ -273,32 +276,26 @@ class AnimeAssistant:
                         text = json.loads(result)["text"]
                         if text:
                             print(f"\nРаспознано: {text}")
-                            # Вставляем текст в поле ввода
-                            self.user_input.delete(0, tk.END)
-                            self.user_input.insert(0, text)
-                            
-                            # Автоматическая отправка
-                            self.send_message()
-                    else:
-                        # Выводим частичные результаты
-                        partial = recognizer.PartialResult()
-                        if partial:
-                            partial_text = json.loads(partial)["partial"]
-                            print(f"Слушаю: {partial_text}", end='\r')
+                            if "пауза" in text:
+                                self.audio_token = False
 
-        except KeyboardInterrupt:
-            print("\nЗапись остановлена")
+                            if "мику" in text:
+                                # Вставляем текст в поле ввода
+                                self.user_input.delete(0, tk.END)
+                                self.user_input.insert(0, text)
+                                self.send_message()
+                                self.audio_token = True
+                            elif self.audio_token:
+                                self.user_input.delete(0, tk.END)
+                                self.user_input.insert(0, text)
+                                self.send_message()
+
+                            
+                            
+
+
         except Exception as e:
             print(f"Ошибка: {str(e)}")
-
-            
-        # Вставляем текст в поле ввода
-        self.user_input.delete(0, tk.END)
-        self.user_input.insert(0, text)
-        
-        # Автоматическая отправка
-        self.send_message()
-
 
 # --------------------------------------------------------------------------------------------------------------------------------------------------------
 
