@@ -16,4 +16,7 @@ Rus:
 P.S пока что это не оформлено как приложение, поэтому запустить пока можно только через комплятор (vs-code, pycharm...)
 P.P.S картинки для проекта генерировала нейросеть)
 
-For copy: 'git clone https://github.com/MaTPetrov/ai_assistant.git'
+For copy: 
+```bash
+git clone https://github.com/MaTPetrov/ai_assistant.git
+```
