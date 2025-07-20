@@ -12,7 +12,7 @@ import sounddevice as sd
 import numpy as np
 from vosk import Model, KaldiRecognizer
 import queue
-
+import pyttsx3
 
 #открытие файла с данными пользователя
 with open("personal_data.txt", "r") as file:
@@ -97,12 +97,6 @@ class HybridMemory:
         """
 
 #--------------------------------------------------------------------------------------------------------------------------------------------------------
-#голос
-
-
-
-
-#--------------------------------------------------------------------------------------------------------------------------------------------------------
 
 def check_ollama_connection(max_retries=5, delay=2):
     """Проверяет подключение к Ollama с повторными попытками"""
@@ -116,7 +110,7 @@ def check_ollama_connection(max_retries=5, delay=2):
             time.sleep(delay)
     raise ConnectionError("Не удалось подключиться к Ollama после нескольких попыток")
 
-# В начале __init__ класса AnimeAssistant добавьте:
+# В начале __init__ класса AnimeAssistant:
 #check_ollama_connection()
 
 #--------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -134,10 +128,15 @@ class AnimeAssistant:
 
         # Инициализация
         self.context = []
+        #self.context.append(personal_data)
+        
         self.model = "mistral"
         self.recording = False
-        
-        # Простая инициализация Vosk
+        # Инициализация синтеза речи
+        self.voice_enabled = True
+        self.engine = None
+        self.init_tts()
+        # Инициализация Vosk
         self.vosk_model = Model("model") if os.path.exists("model") else None
         if self.vosk_model:
             print("✅ Модель распознавания речи загружена")
@@ -148,7 +147,10 @@ class AnimeAssistant:
         self.setup_ui()
 
         # Инициализация модели
-        self.init_model()
+        #self.init_model()
+
+        self.context.append({"role": "system", "content": personal_data})
+
 
     def setup_ui(self):
         """Создание интерфейса"""
@@ -226,6 +228,13 @@ class AnimeAssistant:
 
         # Приветственное сообщение
         self.add_to_chat("Мику", "Привет! Чем могу помочь?")
+        
+        self.voice_button = ttk.Button(
+            input_frame,
+            text="🔊",  # Иконка динамика
+            command=self.toggle_voice
+        )
+        self.voice_button.pack(side=tk.LEFT, padx=(0, 5))
 
     # голоc
     def start_voice_input(self):
@@ -297,6 +306,59 @@ class AnimeAssistant:
         except Exception as e:
             print(f"Ошибка: {str(e)}")
 
+
+
+    def init_tts(self):
+        """Инициализация синтезатора речи"""
+        try:
+            self.engine = pyttsx3.init()
+            # Настройки голоса
+            voices = self.engine.getProperty('voices')
+            if voices:
+                # Попробуем найти женский голос
+                for voice in voices:
+                    if "female" in voice.name.lower():
+                        self.engine.setProperty('voice', voice.id)
+                        break
+                else:
+                    # Если женский не найден, берем первый доступный
+                    self.engine.setProperty('voice', voices[0].id)
+            
+            self.engine.setProperty('rate', 150)  # Скорость речи
+            self.engine.setProperty('volume', 0.9)  # Громкость (0.0-1.0)
+        except Exception as e:
+            print(f"Ошибка инициализации синтезатора речи: {e}")
+            self.engine = None
+
+    # Добавим новую функцию для озвучивания текста
+    def speak(self, text):
+        """Озвучивание текста, если включена озвучка"""
+        if not self.voice_enabled or not self.engine:
+            return
+        else:
+            # Запускаем в отдельном потоке, чтобы не блокировать GUI
+            threading.Thread(target=self._speak, daemon=True).start()
+            
+    def _speak():
+        try:
+            self.engine.say(text)
+            self.engine.runAndWait()
+        except Exception as e:
+            print(f"Ошибка синтеза речи: {e}")
+            
+    
+
+    def toggle_voice(self):
+        """Переключает озвучку ответов"""
+        self.voice_enabled = not self.voice_enabled
+        if self.voice_enabled:
+            self.voice_button.config(text="🔊")
+            # Озвучиваем подтверждение
+            self.speak("Озвучка включена")
+        else:
+            self.voice_button.config(text="🔇")
+            self.speak("Озвучка выключена")
+
 # --------------------------------------------------------------------------------------------------------------------------------------------------------
 
     def load_gif(self, filename, emoticon):
@@ -337,7 +399,7 @@ class AnimeAssistant:
 # --------------------------------------------------------------------------------------------------------------------------------------------------------
 
     def set_emotion(self, emotion):
-        """Смена эмоции (для примера - просто меняем текст)"""
+        """Смена эмоции"""
         self.current_emotion = emotion
         emotions_text = {
             "default": "Готова помочь!",
@@ -355,7 +417,7 @@ class AnimeAssistant:
         threading.Thread(target=self.check_model, daemon=True).start()
 
         # Перенесем инициализацию модели в отдельный поток
-        threading.Thread(target=self.initialize_context, args=(personal_data,), daemon=True).start()
+        threading.Thread(target=self.initialize_context, args=(personal_data,), daemon=True).start() #временно метод выведен наверх в init класса (колхоз)
 
 
     def initialize_context(self, personal_data):
@@ -363,14 +425,14 @@ class AnimeAssistant:
         self.context.append({"role": "user", "content": personal_data})
 
         # 2. Формируем контекст
-        messages = [
+        self.messages = [
             *self.context[-8:]  # Берём 8 последних сообщений
         ]
 
         # 3. Запрос к модели
         response = ollama.chat(
             model=self.model,
-            messages=messages,
+            messages=self.messages,
             stream=False
         )
 
@@ -422,18 +484,26 @@ class AnimeAssistant:
 # --------------------------------------------------------------------------------------------------------------------------------------------------------
 
     def get_ai_response(self, user_text):
-        """Получение ответа от ИИ с полной очисткой JSON"""
-        
+        """Получение ответа от ИИ"""
+
+        # Проверка на опасные команды
+        BANNED_COMMANDS = ["rm", "dd", "shutdown", "reboot", "mkfs", ">", ">>", "|"]
+        if any(cmd in ai_response.lower() for cmd in BANNED_COMMANDS):
+            ai_response = "Извините, я не могу быть уверенна, что правильно выполню эту команду, так как она может навредить устройству"
+            self.add_to_chat("Мику", ai_response)
+            return
+
         # Основные команды и их ключевые слова
         COMMAND_KEYWORDS = {
             "firefox": ["браузер", "firefox", "интернет", "веб"],
             "nautilus": ["файловый менеджер", "проводник", "файлы", "nautilus", "обзор файлов"],
             "kitty": ["терминал", "консоль", "командная строка"],
             "gedit": ["текстовый редактор", "gedit", "редактор текста", "заметки"],
+
         }
         
         # 1. Очистка контекста от старых JSON-ответов
-        self.context = [msg for msg in self.context if not isinstance(msg.get('content', ''), str) or '{' not in msg['content']]
+        # self.context = [msg for msg in self.context if not isinstance(msg.get('content', ''), str) or '{' not in msg['content']]
         
         # 2. Проверка на команды открытия
         user_text_lower = user_text.lower()
@@ -478,12 +548,12 @@ class AnimeAssistant:
             self.context.append({"role": "user", "content": user_text})
             
             # Формируем чистый контекст без системных промптов
-            messages = [msg for msg in self.context[-8:] if not msg.get('content', '').startswith('{')]
+            # self.messages = [msg for msg in self.context[-8:] if not msg.get('content', '').startswith('{')]
             
             # Запрос к модели
             response = ollama.chat(
                 model=self.model,
-                messages=messages,
+                messages=self.context,
                 stream=False
             )
             
@@ -500,6 +570,9 @@ class AnimeAssistant:
             
             # Отображаем ответ
             self.add_to_chat("Мику", ai_response)
+
+            # Озвучиваем ответ
+            self.speak(ai_response)
             
             # Эмоции
             self.set_emotion("happy")
